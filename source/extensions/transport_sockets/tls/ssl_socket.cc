@@ -79,45 +79,39 @@ Network::IoResult SslSocket::doRead(Buffer::Instance& read_buffer) {
   PostIoAction action = PostIoAction::KeepOpen;
   uint64_t bytes_read = 0;
   while (keep_reading) {
-    // We use 2 slices here so that we can use the remainder of an existing buffer chain element
-    // if there is extra space. 16K read is arbitrary and can be tuned later.
-    Buffer::RawSlice slices[2];
-    uint64_t slices_to_commit = 0;
-    uint64_t num_slices = read_buffer.reserve(16384, slices, 2);
-    for (uint64_t i = 0; i < num_slices; i++) {
-      int rc = SSL_read(ssl_.get(), slices[i].mem_, slices[i].len_);
-      ENVOY_CONN_LOG(trace, "ssl read returns: {}", callbacks_->connection(), rc);
-      if (rc > 0) {
-        slices[i].len_ = rc;
-        slices_to_commit++;
-        bytes_read += rc;
-      } else {
-        keep_reading = false;
-        int err = SSL_get_error(ssl_.get(), rc);
-        switch (err) {
-        case SSL_ERROR_WANT_READ:
-          break;
-        case SSL_ERROR_ZERO_RETURN:
-          end_stream = true;
-          break;
-        case SSL_ERROR_WANT_WRITE:
-        // Renegotiation has started. We don't handle renegotiation so just fall through.
-        default:
-          drainErrorQueue();
-          action = PostIoAction::Close;
-          break;
-        }
-
-        break;
-      }
-    }
-
-    if (slices_to_commit > 0) {
-      read_buffer.commit(slices, slices_to_commit);
+    Buffer::RawSlice *slice;
+    read_buffer.reserve(8196, slice, 1);
+    int rc = SSL_read(ssl_.get(), slice->mem_, slice->len_);
+    ENVOY_CONN_LOG(trace, "ssl read returns: {}", callbacks_->connection(), rc);
+    if (rc > 0) {
+      slices[i].len_ = rc;
+      bytes_read += rc;
+      read_buffer.commit(slice, 1);
       if (callbacks_->shouldDrainReadBuffer()) {
         callbacks_->setReadBufferReady();
         keep_reading = false;
       }
+    } else {
+      keep_reading = false;
+      int err = SSL_get_error(ssl_.get(), rc);
+      switch (err) {
+      case SSL_ERROR_WANT_READ:
+        break;
+      case SSL_ERROR_ZERO_RETURN:
+        end_stream = true;
+        break;
+      case SSL_ERROR_WANT_WRITE:
+      // Renegotiation has started. We don't handle renegotiation so just fall through.
+      default:
+        drainErrorQueue();
+        action = PostIoAction::Close;
+        break;
+      }
+
+      break;
+    }
+
+    if (commit_slice) {
     }
   }
 
